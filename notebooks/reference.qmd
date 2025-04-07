@@ -1,0 +1,75 @@
+
+Extra References:
+- https://arxiv.org/abs/2108.05858
+
+We have selected a dataset from the [Econometrics Dataset Package](https://cran.r-project.org/web/packages/Ecdat/index.html) from the various datasets listed [here](https://cran.r-project.org/web/packages/Ecdat/Ecdat.pdf).
+
+A classic example for DiD analysis is the study by Card and Krueger (1994) on the impact of minimum wage increases on employment in the fast-food industry. This study utilized data from fast-food restaurants in New Jersey and Pennsylvania.
+
+```{r}
+library(pacman)
+pacman::p_load(tidyverse, fixest, did, ggplot2, plm, stargazer)
+path = "D:/analysis/Econometrics/project/card_kruger/"
+windows()
+```
+
+```{r}
+# load the dataset
+df <- read.csv(file.path(path,'data/fast-food-data.csv'))
+```
+
+The `CardKrueger1994` dataset includes information on employment, wages, and other characteristics of fast-food restaurants before and after the **minimum wage increase in New Jersey**, with Pennsylvania serving as a control group. Familiarize yourself with the dataset by examining its structure and summary statistics
+
+```{r}
+# summary(df)
+str(df)
+```
+
+### Defining Treatment and Control Groups
+
+```{r}
+df <- df %>%
+  mutate(
+    treatment = ifelse(state == 1, 1, 0),  # 1 if NJ (treatment), 0 if PA (control)
+    post_treatment = ifelse(!is.na(empft2), 1, 0),  # 1 if second interview data exists
+    emp_total1 = empft + (emppt / 2),  # Convert part-time to full-time equivalents
+    emp_total2 = empft2 + (emppt2 / 2)  # After minimum wage increase
+)
+
+```
+
+
+### Compare means before and after Policy Change
+
+```{r}
+df %>%
+  group_by(treatment, post_treatment) %>%
+  summarise(
+    mean_emp = mean(emp_total1, na.rm = TRUE),
+    mean_emp_after = mean(emp_total2, na.rm = TRUE)
+  )
+
+```
+
+
+```{r}
+df %>%
+  group_by(state, post_treatment) %>%
+  summarise(avg_emp = mean(emp_total1, na.rm = TRUE)) %>%
+  ggplot(aes(x = post_treatment, y = avg_emp, color = as.factor(state))) +
+  geom_line() + geom_point() +
+  labs(title = "Average Employment Before and After Minimum Wage Change",
+       x = "Pre (0) vs Post (1)",
+       y = "Average Employment",
+       color = "State") +
+  theme_minimal()
+
+```
+
+
+## Running the DiD Model
+
+```{r}
+did_model <- feols(emp_total2 ~ treatment * post_treatment, data = df)
+summary(did_model)
+```

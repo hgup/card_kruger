@@ -1,0 +1,327 @@
+---
+title: "Difference-in-Differences Analysis: Minimum Wage Effect"
+subtitle: "Replication of Card & Krueger (1994) Fast-Food Employment Study"
+author:
+  - "Hursh Gupta"
+  - "Setu Jalandar"
+date: "`r Sys.Date()`"
+format:
+  html:
+    theme: cosmo
+    code-fold: false
+    toc: true
+    number-sections: true
+---
+
+## Introduction
+
+This notebook performs a Difference-in-Differences (DiD) analysis to estimate the impact of a minimum wage increase on employment in the fast-food industry. The analysis replicates the classic study by Card and Krueger (1994), which utilized data from fast-food restaurants in New Jersey (treatment group) and Pennsylvania (control group) before and after New Jersey raised its minimum wage.
+
+We use a dataset similar to the one employed in the original study, sourced from the R `Ecdat` package resources.
+
+**References:**
+
+* Card, David, and Alan B. Krueger. 1994. "Minimum Wages and Employment: A Case Study of the Fast-Food Industry in New Jersey and Pennsylvania." *American Economic Review* 84 (4): 772–93.
+* Related ArXiv Paper: [https://arxiv.org/abs/2108.05858](https://arxiv.org/abs/2108.05858)
+* Ecdat Package: [https://cran.r-project.org/web/packages/Ecdat/index.html](https://cran.r-project.org/web/packages/Ecdat/index.html)
+* Ecdat Datasets PDF: [https://cran.r-project.org/web/packages/Ecdat/Ecdat.pdf](https://cran.r-project.org/web/packages/Ecdat/Ecdat.pdf)
+
+## Setup
+
+First, we load the necessary R packages using `pacman` for package management. We also define a helper function for creating nicely formatted tables and set a default theme for our plots.
+
+```{r setup}
+#| message: false
+#| warning: false
+
+library(pacman)
+pacman::p_load(
+  tidyverse,  # For data manipulation (dplyr, tidyr) and plotting (ggplot2)
+  readxl,     # For reading Excel files (though using read.csv below)
+  fixest,     # For fast fixed-effects regression (feols)
+  skimr,      # For better summary statistics
+  stargazer,
+  ggplot2,    # For plotting
+  knitr,       # For knitting the notebook and kable tables
+)
+
+# Define user-specific path - **ADJUST THIS PATH**
+path = "D:/analysis/Econometrics/project/card_kruger/"
+
+# Helper function for nice tables
+nice_table <- function(x, ...) {
+  knitr::kable(x, digits = 3, ...)
+}
+
+# Set default theme for ggplot
+theme_set(theme_minimal())
+
+# Optional: uncomment if running in standard R GUI on Windows
+# windows()
+```
+
+## Load Data
+
+First we will use this function to download the data (credits: [aaronmams.github.io](https://aaronmams.github.io/Card-Krueger-Replication/#:~:text=Card%20and%20Krueger%20Data))
+
+```{r}
+#| eval: false
+tempfile_path <- tempfile()
+download.file("http://davidcard.berkeley.edu/data_sets/njmin.zip", destfile = tempfile_path)
+tempdir_path <- tempdir()
+unzip(tempfile_path, exdir = tempdir_path)
+codebook <- read_lines(file = paste0(tempdir_path, "/codebook"))
+
+variable_names <- codebook %>%
+  `[`(8:59) %>%
+  `[`(-c(5, 6, 13, 14, 32, 33)) %>%
+  str_sub(1, 13) %>%
+  str_squish() %>%
+  str_to_lower()
+
+dataset <- read_table2(paste0(tempdir_path, "/public.dat"),
+                       col_names = FALSE)
+
+dataset <- dataset %>%
+  select(-X47) %>%
+  `colnames<-`(., variable_names) %>%
+  mutate_all(as.numeric) %>%
+  mutate(sheet = as.character(sheet)) %>%
+  mutate(
+    state = ifelse(state == 1, "nj", "pa")
+  )
+
+
+write.csv(dataset,file="data/fast-food-data.csv")
+```
+
+We load the dataset from a CSV file. This file contains information on employment, wages, and other characteristics for fast-food restaurants in New Jersey and Pennsylvania.
+
+```{r load-data}
+# Load the dataset using read.csv
+# Ensure the file exists at the specified 'path'
+raw_dat <-  read.csv(file.path(path,'data/fast-food-data.csv'))
+```
+
+## Explore Raw Data
+
+Let's examine the structure of the raw dataset to understand its variables and format. The original data is often in a "wide" format, with separate columns for measurements taken before (wave 1) and after (wave 2) the policy change.
+
+```{r explore-raw}
+# Display the structure of the raw data
+str(raw_dat)
+```
+
+## Data Cleaning and Reshaping
+
+The raw data needs to be reshaped from a wide format to a long format, which is more suitable for panel data analysis like DiD. We create a `post` variable (0 for observations before the wage increase, 1 for observations after). We also calculate Full-Time Equivalent (FTE) employment.
+
+### Reshape to Long Format
+
+We separate the data from the two waves (before and after) and stack them, creating the `post` indicator.
+
+```{r reshape-data}
+# Select wave 1 variables, rename ID, mark as pre-period (post=0)
+df_pre <- raw_dat %>%
+  select(
+    store_id = X, # Assuming 'X' is the store identifier column
+    chain, state, co_owned, starts_with("empft"), starts_with("emppt"),
+    starts_with("nmgrs"), starts_with("wage_st")
+    # Add any other time-varying controls if needed
+    ) %>%
+  select(-ends_with("2")) %>% # Remove any accidentally included wave 2 vars
+  mutate(post = 0)
+
+# Select wave 2 variables, rename ID and wave 2 variables, mark as post-period (post=1)
+df_post <- raw_dat %>%
+  select(
+    store_id = X,
+    chain, state, co_owned, ends_with("2") # Select ID, time-invariant vars, and wave 2 vars
+  ) %>%
+  # Rename wave 2 variables by removing the '2' suffix
+  rename_with(~ gsub("2$", "", .x), ends_with("2")) %>%
+  mutate(post = 1)
+
+# Combine pre and post dataframes
+long_df <- bind_rows(df_pre, df_post)
+
+```
+
+### Final Cleaning and Variable Creation
+
+We convert variables to appropriate types (numeric, factor), calculate FTE employment (`emp_total`), create the `treatment` dummy variable (1 for NJ, 0 for PA), and select the final set of columns for analysis.
+
+```{r clean-data}
+# Final data transformations
+df <- long_df %>%
+  mutate(
+    # Ensure key variables are numeric
+    empft = as.numeric(empft),
+    emppt = as.numeric(emppt),
+    wage_st = as.numeric(wage_st),
+    nmgrs = as.numeric(nmgrs),
+    # Calculate Total Full Time Equivalent employment (FTE)
+    emp_total = empft + (0.5 * emppt),
+    # Create treatment dummy: 1 if NJ (treatment), 0 if PA (control)
+    treatment = ifelse(state == "nj", 1, 0),
+    # Convert character variables to factors
+    chain = factor(chain),
+    state = factor(state)
+  ) %>%
+  # Select final columns
+  select(
+    store_id, treatment, post, state, chain, co_owned,
+    empft, emppt, emp_total, wage_st, nmgrs
+  ) %>%
+  # Arrange data for clarity (optional)
+  arrange(store_id, post)
+```
+
+## Explore Cleaned Data
+
+Now, let's look at the structure and summary statistics of the final, cleaned dataset (`df`) that we will use for the analysis.
+
+### Structure of Final Data
+
+```{r structure-final}
+# Display structure of the cleaned, long-format dataframe
+print("Structure of final long dataset")
+str(df)
+```
+
+### Summary Statistics
+
+We use `skimr` to get a detailed summary of the numeric variables, excluding the `store_id`.
+
+```{r summary-final}
+#| message: false
+#| warning: false
+
+# Display summary statistics using skimr, formatted with kable
+print("Summary of Final Long Dataset (Numeric Variables)")
+skim(df %>% select(-store_id)) %>%
+  # Focus on numeric variable summaries
+  filter(skim_type == "numeric") %>%
+  # Rename columns for clarity
+  rename(variable = "skim_variable", missing = "n_missing") %>%
+  rename_with(~ gsub("^numeric.", "", .x), starts_with("numeric.")) %>% # Clean percentile names
+  # Select relevant stats
+  select(variable, missing, mean, sd, p0, p25, p50, p75, p100, hist ) %>%
+  # Display as a nice table
+  nice_table()
+```
+
+## Compare Means Before and After Policy Change (EDA)
+
+A key part of DiD is observing the trends in the outcome variable (FTE employment) for both the treatment (NJ) and control (PA) groups before and after the policy change. We calculate the average employment and visualize it.
+
+### Calculate Average Employment
+
+```{r calculate-means}
+# Calculate average FTE employment by state and time period
+avg_emp_summary <- df %>%
+  group_by(state, post) %>%
+  summarise(avg_emp = mean(emp_total, na.rm = TRUE), .groups = 'drop')
+
+# Print the summary table (optional)
+# print(avg_emp_summary)
+```
+
+### Plot Average Employment Trends
+
+This plot helps visualize the "difference-in-differences". We compare the change in employment in NJ (blue line) to the change in PA (red line).
+
+```{r plot-means}
+# Define plot elements
+plot_title <- "Average FTE Employment Before (0) and After (1) Policy Change"
+emp_plot <- ggplot(avg_emp_summary, aes(x = factor(post), y = avg_emp, color = state, group = state)) +
+  geom_line(linewidth = 1) +  # Connect points with lines
+  geom_point(size = 3) +     # Show points for means
+  labs(
+    title = plot_title,
+    x = "Period (0 = Before, 1 = After)",
+    y = "Average FTE Employment",
+    color = "State"
+  ) +
+  scale_color_manual(values = c("nj" = "blue", "pa" = "red")) # Assign specific colors
+
+# Display the plot
+print(emp_plot)
+```
+
+## Running the DiD Model
+
+We now estimate the DiD model using regression. The core idea is to model the outcome variable (`emp_total`) as a function of the treatment status (`treatment`), the time period (`post`), and their interaction (`treatment * post`). The coefficient on the interaction term is the DiD estimate of the policy effect.
+
+We estimate several specifications:
+
+1.  **Basic DiD:** Only includes treatment, post, and interaction terms.
+2.  **DiD + Covariates:** Adds control variables (chain, ownership, starting wage, managers).
+3.  **DiD + Covariates + Fixed Effects (FE):** Adds store-level fixed effects to control for time-invariant unobserved differences between stores.
+4.  **DiD + Covariates + FE + Clustered SEs:** Uses fixed effects and clusters standard errors at the state level to account for potential correlation within states.
+
+We use the efficient `feols` function from the `fixest` package.
+
+### Model 1: Basic DiD
+
+```{r model-1}
+# Basic DiD model specification
+m1_basic_did <- feols(emp_total ~ treatment * post, data = df)
+# summary(m1_basic_did)
+```
+
+### Model 2: DiD with Covariates
+
+```{r model-2}
+# DiD model including covariates
+m2_did_cov <- feols(emp_total ~ treatment * post + chain + co_owned + wage_st + nmgrs,
+                    data = df)
+# summary(m2_did_cov) 
+```
+
+### Model 3: DiD with Store Fixed Effects & Covariates
+
+```{r model-3}
+# DiD model with covariates and store fixed effects (| store_id)
+m3_did_fe <- feols(emp_total ~ treatment * post + chain + co_owned + wage_st + nmgrs | store_id,
+                   data = df)
+# summary(m3_did_fe) 
+```
+
+### Model 4: DiD with Store FE, Covariates & Clustered SEs
+
+```{r model-4}
+# DiD model with covariates, store FE, and standard errors clustered by state
+m4_did_fe_clust <- feols(emp_total ~ treatment * post + chain + co_owned + wage_st + nmgrs | store_id,
+                         data = df,
+                         cluster = ~state) # Specify clustering variable
+# summary(m4_did_fe_clust)
+```
+
+## DiD Model Results
+
+We present the results from the four models side-by-side using the `modelsummary` package for a clear comparison.
+
+```{r results-table}
+#| message: false
+#| warning: false
+
+# Create a list of the estimated models
+
+# Generate the summary table using modelsummary
+stargazer(m1_basic_did, m2_did_cov, m3_did_fe, m4_did_fe_clust, title = "DiD Estimates of Minimum Wage Effect on FTE Employment", type="text")
+```
+
+## Interpretation Notes
+
+The key coefficient of interest in the table above is **`NJ x Post (DiD Effect)`**. This coefficient estimates the average causal effect of the minimum wage increase on FTE employment in New Jersey *relative to* the change observed in Pennsylvania over the same period.
+
+* A **positive coefficient** suggests employment increased more (or decreased less) in NJ relative to PA after the policy change.
+* A **negative coefficient** suggests employment decreased more (or increased less) in NJ relative to PA.
+
+Model 3 (with Store FE) and Model 4 (with Store FE and Clustered SEs) are often preferred specifications:
+
+* **Model 3** controls for all time-invariant unobserved differences between stores (e.g., location, baseline management quality).
+* **Model 4** builds on Model 3 by adjusting the standard errors to account for potential correlation of outcomes within the same state. This often results in larger standard errors (more conservative inference).
+
+**Statistical significance** (indicated by stars `*`) suggests the likelihood that the observed effect is truly different from zero, rather than due to random chance. The results in the table (typically showing a small, statistically insignificant effect close to zero) are consistent with Card and Krueger's original findings that the minimum wage increase in New Jersey did *not* lead to a significant decrease in fast-food employment compared to Pennsylvania.

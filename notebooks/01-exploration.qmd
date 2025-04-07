@@ -1,0 +1,50 @@
+
+```{r}
+library(pacman)
+pacman::p_load(tidyverse, fixest, did, ggplot2, plm)
+path = "D:/analysis/Econometrics/project/card_kruger/"
+```
+
+```{r}
+# load the dataset
+df <- read.csv(file.path(path,'data/fast-food-data.csv'))
+```
+
+```{r}
+# drop those who didn't come for second round of interview.
+df <- df[df$status2 == 1,]
+df$treatment <- ifelse(df$state == 1, 1, 0) # NJ = 1, Pa = 0
+data_long <- df %>%
+  select(-ends_with("2")) %>%  # Drop A2, B2, C2 from original dataset
+  mutate(post = 0) %>% 
+  bind_rows(
+    df %>%
+      select(ends_with("2")) %>%
+      rename_with(~ gsub("2$", "", .x)) %>% 
+      mutate(post = 1)
+  )
+head(data_long)
+```
+
+We have a panel data where the same records (individuals, firms, locations, etc.) are observed before and after the treatment, you should use a Difference-in-Differences (DiD) model with fixed effects to control for individual-level unobserved heterogeneity.
+
+```{r}
+data <- data.frame(
+  A = c(1, 2),
+  B = c(3, 4),
+  C = c(5, 6),
+  `A2` = c(7, 8),
+  `B2` = c(9, 10),
+  `C2` = c(11, 12)
+)
+data_long <- data %>%
+  select(-ends_with("2")) %>%  # Drop A2, B2, C2 from original dataset
+  mutate(t = 0) %>% 
+  bind_rows(
+    data %>%
+      select(ends_with("2")) %>%
+      rename_with(~ gsub("2$", "", .x)) %>% 
+      mutate(t = 1)
+  )
+print(data_long)
+```

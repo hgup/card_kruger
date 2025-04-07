@@ -1,0 +1,86 @@
+
+Extra References:
+- https://arxiv.org/abs/2108.05858
+
+We have selected a dataset from the [Econometrics Dataset Package](https://cran.r-project.org/web/packages/Ecdat/index.html) from the various datasets listed [here](https://cran.r-project.org/web/packages/Ecdat/Ecdat.pdf).
+
+A classic example for DiD analysis is the study by Card and Krueger (1994) on the impact of minimum wage increases on employment in the fast-food industry. This study utilized data from fast-food restaurants in New Jersey and Pennsylvania.
+
+```{r}
+library(pacman)
+pacman::p_load(tidyverse, fixest, did, ggplot2, plm, stargazer)
+path = "D:/analysis/Econometrics/project/card_kruger/"
+windows()
+```
+
+```{r}
+# load the dataset
+dat <- read.csv(file.path(path,'data/fast-food-data.csv'))
+```
+
+The `CardKrueger1994` dataset includes information on employment, wages, and other characteristics of fast-food restaurants before and after the **minimum wage increase in New Jersey**, with Pennsylvania serving as a control group. Familiarize yourself with the dataset by examining its structure and summary statistics
+
+```{r}
+# summary(df)
+str(dat)
+```
+
+### Cleaning
+
+```{r}
+long_df <- dat %>%
+  select(-ends_with("2")) %>%  # Drop A2, B2, C2 from original dataset
+  rename(store_id = X) %>%
+  mutate(post = 0) %>% 
+  bind_rows(
+    dat %>%
+      rename(store_id = X) %>%
+      select(store_id,chain,state,ends_with("2")) %>%
+      rename_with(~ gsub("2$", "", .x)) %>% 
+      mutate(post = 1)
+  )
+df <- long_df %>% mutate(emp_total = empft + (emppt/2))
+    select(store_id, state, post, empft, emppt, nmgrs, wage_st, chain , co_owned) 
+str(df) 
+```
+
+```{r}
+summary(df)
+```
+
+### Defining Treatment and Control Groups
+
+```{r}
+```
+
+
+### Compare means before and after Policy Change
+
+```{r}
+df %>%
+  group_by(state, post) %>%
+  summarise(avg_emp = mean(emp_total, na.rm = TRUE))
+
+```
+
+
+```{r}
+df %>%
+  group_by(state, post) %>%
+  summarise(avg_emp = mean(emp_total, na.rm = TRUE)) %>%
+  ggplot(aes(x = post, y = avg_emp, color = as.factor(state))) +
+  geom_line() + geom_point() +
+  labs(title = "Average Employment Before and After Minimum Wage Change",
+       x = "Pre (0) vs Post (1)",
+       y = "Average Employment",
+       color = "State") +
+  theme_minimal()
+
+```
+
+
+## Running the DiD Model
+
+```{r}
+
+```

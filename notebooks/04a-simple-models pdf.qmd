@@ -10,7 +10,6 @@ format:
     code-fold: false
     toc: true
     number-sections: true
-    include-before-body: title-separator.tex
 ---
 
 # Introduction

@@ -3,7 +3,7 @@ title: "Difference-in-Differences Analysis: Minimum Wage Effect"
 subtitle: "Replication of Card & Krueger (1994) Fast-Food Employment Study"
 author:
   - "Hursh Gupta"
-  - "Setu Jalandar"
+  - "Satu Jalander"
 date: "`r Sys.Date()`"
 format:
   html:
